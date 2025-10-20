@@ -1,0 +1,33 @@
+{
+  "name": "cubyz-node-client",
+  "version": "0.1.0",
+  "description": "Cubyz Node.js Client Library",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "check": "biome check .",
+    "check:write": "biome check --write .",
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "sandbox": "npm run build && tsx ./sandbox/main.ts",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@biomejs/biome": "2.2.6",
+    "@types/node": "^24.8.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
