@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomInt } from "node:crypto";
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
-import { readInt32BE, writeInt32BE } from "./binary.js";
+import { readFloat16BE, readInt32BE, writeInt32BE } from "./binary.js";
 import {
   CHANNEL,
   CONFIRMATION_BATCH_SIZE,
@@ -28,6 +28,18 @@ const LOG_LEVEL_ORDER = {
   error: 3,
   silent: 4,
 } as const;
+
+const ENTITY_POSITION_TYPE = {
+  NO_VELOCITY_ENTITY: 0,
+  F16_VELOCITY_ENTITY: 1,
+  F32_VELOCITY_ENTITY: 2,
+  NO_VELOCITY_ITEM: 3,
+  F16_VELOCITY_ITEM: 4,
+  F32_VELOCITY_ITEM: 5,
+} as const;
+
+type EntityPositionType =
+  (typeof ENTITY_POSITION_TYPE)[keyof typeof ENTITY_POSITION_TYPE];
 
 export type LogLevel = keyof typeof LOG_LEVEL_ORDER;
 
@@ -72,6 +84,28 @@ export interface PlayerState {
   rotation: Vector3;
 }
 
+export interface EntitySnapshot {
+  id: number;
+  position: Vector3;
+  velocity: Vector3;
+  rotation: Vector3;
+  timestamp: number;
+}
+
+export interface ItemSnapshot {
+  index: number;
+  position: Vector3;
+  velocity: Vector3;
+  timestamp: number;
+}
+
+export interface EntityPositionPacket {
+  timestamp: number;
+  basePosition: Vector3;
+  entities: EntitySnapshot[];
+  items: ItemSnapshot[];
+}
+
 export interface ProtocolEvent {
   channelId: number;
   protocolId: number;
@@ -110,13 +144,21 @@ type CubyzConnectionEvents = {
   connected: [];
   handshakeComplete: [string];
   chat: [string];
-  players: [string[]];
+  players: [PlayersEvent];
+  entityPositions: [EntityPositionPacket];
   protocol: [ProtocolEvent];
   disconnect: [DisconnectEvent];
 };
 
 export interface DisconnectEvent {
   reason: "server" | "timeout";
+}
+
+export type PlayersEvent = PlayerData[];
+
+export interface PlayerData {
+  id: number;
+  name: string;
 }
 
 export class CubyzConnection extends EventEmitter {
@@ -138,6 +180,8 @@ export class CubyzConnection extends EventEmitter {
   >();
   private readonly pendingConfirmations: PendingConfirmation[] = [];
   private readonly playerMap = new Map<number | string, string | null>();
+  private readonly entityStates = new Map<number, EntitySnapshot>();
+  private readonly itemStates = new Map<number, ItemSnapshot>();
   private lastKeepAliveSent = Date.now();
   private lastInbound = Date.now();
   private lastInitSent = 0;
@@ -536,6 +580,10 @@ export class CubyzConnection extends EventEmitter {
       case PROTOCOL.HANDSHAKE:
         await this.handleHandshake(payload);
         break;
+      case PROTOCOL.ENTITY_POSITION:
+        this.handleEntityPosition(payload);
+        this.emit("protocol", { channelId, protocolId, payload });
+        break;
       case PROTOCOL.ENTITY:
         this.handleEntityUpdate(payload);
         this.emit("protocol", { channelId, protocolId, payload });
@@ -724,19 +772,229 @@ export class CubyzConnection extends EventEmitter {
     }
   }
 
+  private handleEntityPosition(payload: Buffer): void {
+    const headerSize = 2 + 8 * 3;
+    if (payload.length < headerSize) {
+      this.log("warn", "Entity position payload too short", {
+        length: payload.length,
+      });
+      return;
+    }
+
+    let offset = 0;
+    const ensure = (size: number) => {
+      if (offset + size > payload.length) {
+        throw new Error(
+          `Entity position packet truncated, needed ${size} bytes at offset ${offset}`,
+        );
+      }
+    };
+
+    const readVec3f32 = (): Vector3 => {
+      ensure(12);
+      const vector: Vector3 = {
+        x: payload.readFloatBE(offset),
+        y: payload.readFloatBE(offset + 4),
+        z: payload.readFloatBE(offset + 8),
+      };
+      offset += 12;
+      return vector;
+    };
+
+    const readVec3f16 = (): Vector3 => {
+      ensure(6);
+      const vector: Vector3 = {
+        x: readFloat16BE(payload, offset),
+        y: readFloat16BE(payload, offset + 2),
+        z: readFloat16BE(payload, offset + 4),
+      };
+      offset += 6;
+      return vector;
+    };
+
+    try {
+      ensure(2);
+      const timestamp = payload.readInt16BE(offset);
+      offset += 2;
+      ensure(24);
+      const basePosition: Vector3 = {
+        x: payload.readDoubleBE(offset),
+        y: payload.readDoubleBE(offset + 8),
+        z: payload.readDoubleBE(offset + 16),
+      };
+      offset += 24;
+
+      const nextEntityStates = new Map<number, EntitySnapshot>();
+      const nextItemStates = new Map<number, ItemSnapshot>();
+      const entitiesForEvent: EntitySnapshot[] = [];
+      const itemsForEvent: ItemSnapshot[] = [];
+
+      while (offset < payload.length) {
+        ensure(1);
+        const type = payload[offset] as EntityPositionType;
+        offset += 1;
+
+        let velocity: Vector3 = { x: 0, y: 0, z: 0 };
+
+        if (
+          type === ENTITY_POSITION_TYPE.F16_VELOCITY_ENTITY ||
+          type === ENTITY_POSITION_TYPE.F16_VELOCITY_ITEM
+        ) {
+          velocity = readVec3f16();
+        } else if (
+          type === ENTITY_POSITION_TYPE.F32_VELOCITY_ENTITY ||
+          type === ENTITY_POSITION_TYPE.F32_VELOCITY_ITEM
+        ) {
+          velocity = readVec3f32();
+        }
+
+        switch (type) {
+          case ENTITY_POSITION_TYPE.NO_VELOCITY_ENTITY:
+          case ENTITY_POSITION_TYPE.F16_VELOCITY_ENTITY:
+          case ENTITY_POSITION_TYPE.F32_VELOCITY_ENTITY: {
+            ensure(4);
+            const id = payload.readUInt32BE(offset);
+            offset += 4;
+            const delta = readVec3f32();
+            const rotation = readVec3f32();
+            const position: Vector3 = {
+              x: basePosition.x + delta.x,
+              y: basePosition.y + delta.y,
+              z: basePosition.z + delta.z,
+            };
+            const state: EntitySnapshot = {
+              id,
+              position,
+              velocity,
+              rotation,
+              timestamp,
+            };
+            nextEntityStates.set(id, state);
+            entitiesForEvent.push({
+              id,
+              position: { ...position },
+              velocity: { ...velocity },
+              rotation: { ...rotation },
+              timestamp,
+            });
+            break;
+          }
+          case ENTITY_POSITION_TYPE.NO_VELOCITY_ITEM:
+          case ENTITY_POSITION_TYPE.F16_VELOCITY_ITEM:
+          case ENTITY_POSITION_TYPE.F32_VELOCITY_ITEM: {
+            ensure(2);
+            const index = payload.readUInt16BE(offset);
+            offset += 2;
+            const delta = readVec3f32();
+            const position: Vector3 = {
+              x: basePosition.x + delta.x,
+              y: basePosition.y + delta.y,
+              z: basePosition.z + delta.z,
+            };
+            const state: ItemSnapshot = {
+              index,
+              position,
+              velocity,
+              timestamp,
+            };
+            nextItemStates.set(index, state);
+            itemsForEvent.push({
+              index,
+              position: { ...position },
+              velocity: { ...velocity },
+              timestamp,
+            });
+            break;
+          }
+          default: {
+            this.log("warn", "Unknown entity position entry type", { type });
+            return;
+          }
+        }
+      }
+
+      this.entityStates.clear();
+      for (const [id, state] of nextEntityStates) {
+        this.entityStates.set(id, state);
+      }
+
+      this.itemStates.clear();
+      for (const [index, state] of nextItemStates) {
+        this.itemStates.set(index, state);
+      }
+
+      const packet: EntityPositionPacket = {
+        timestamp,
+        basePosition: { ...basePosition },
+        entities: entitiesForEvent,
+        items: itemsForEvent,
+      };
+      this.emit("entityPositions", packet);
+    } catch (err) {
+      this.log("warn", "Failed to decode entity position payload", err);
+    }
+  }
+
   private emitPlayers(): void {
-    const players = this.getPlayerNames();
+    const players = this.getPlayers();
     this.emit("players", players);
   }
 
+  getPlayers(): PlayerData[] {
+    return [...this.playerMap.entries()]
+      .filter(([id]) => typeof id === "number")
+      .filter(([, name]) => typeof name === "string" && name.length > 0)
+      .map(([id, name]) => ({ id: id as number, name: name as string }));
+  }
+
   getPlayerNames(): string[] {
-    const names: string[] = [];
-    for (const value of this.playerMap.values()) {
-      if (typeof value === "string" && value.length > 0) {
-        names.push(value);
-      }
+    return this.getPlayers().map((player) => player.name);
+  }
+
+  getEntityStates(): EntitySnapshot[] {
+    return Array.from(this.entityStates.values(), (state) => ({
+      id: state.id,
+      position: { ...state.position },
+      velocity: { ...state.velocity },
+      rotation: { ...state.rotation },
+      timestamp: state.timestamp,
+    }));
+  }
+
+  getEntityState(id: number): EntitySnapshot | undefined {
+    const state = this.entityStates.get(id);
+    if (!state) {
+      return undefined;
     }
-    return names;
+    return {
+      id: state.id,
+      position: { ...state.position },
+      velocity: { ...state.velocity },
+      rotation: { ...state.rotation },
+      timestamp: state.timestamp,
+    };
+  }
+
+  getItemStates(): ItemSnapshot[] {
+    return Array.from(this.itemStates.values(), (state) => ({
+      index: state.index,
+      position: { ...state.position },
+      velocity: { ...state.velocity },
+      timestamp: state.timestamp,
+    }));
+  }
+
+  getItemState(index: number): ItemSnapshot | undefined {
+    const state = this.itemStates.get(index);
+    if (!state) {
+      return undefined;
+    }
+    return {
+      index: state.index,
+      position: { ...state.position },
+      velocity: { ...state.velocity },
+      timestamp: state.timestamp,
+    };
   }
 
   sendChat(message: string): void {

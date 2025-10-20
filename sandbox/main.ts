@@ -33,10 +33,10 @@ async function main() {
   connection.on("handshakeComplete", () => {
     console.log("Handshake finished, sending greeting chat message...");
     connection.sendChat("Hello from the cubyz-node-client example!");
-    setTimeout(() => {
-      console.log("Closing connection after demo");
-      connection.close();
-    }, 5000).unref?.();
+    // setTimeout(() => {
+    //   console.log("Closing connection after demo");
+    //   connection.close();
+    // }, 5000).unref?.();
   });
 
   connection.on("players", (players) => {
@@ -44,7 +44,9 @@ async function main() {
       console.log("[players] none known yet");
       return;
     }
-    console.log(`[players] ${players.join(", ")}`);
+    console.log(
+      `[players] ${players.map((p) => `${p.id}:${p.name}`).join(", ")}`,
+    );
   });
 
   connection.on("chat", (message) => {
@@ -53,6 +55,11 @@ async function main() {
 
   connection.on("disconnect", (event) => {
     console.log(`[disconnect] reason=${event.reason}`);
+  });
+
+  connection.on("entityPositions", (_packet) => {
+    // Uncomment to log all entity position packets (very spammy)
+    // console.log(`[entityPositions] timestamp=${packet.timestamp} entities=${packet.entities.length} items=${packet.items.length}`);
   });
 
   process.once("SIGINT", () => {

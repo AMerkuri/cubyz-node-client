@@ -62,3 +62,23 @@ export function writeInt32BE(
 export function readInt32BE(buffer: Buffer, offset: number): number {
   return buffer.readInt32BE(offset);
 }
+
+export function readFloat16BE(buffer: Buffer, offset: number): number {
+  const raw = buffer.readUInt16BE(offset);
+  const sign = (raw & 0x8000) !== 0 ? -1 : 1;
+  const exponent = (raw >> 10) & 0x1f;
+  const fraction = raw & 0x3ff;
+
+  if (exponent === 0) {
+    if (fraction === 0) {
+      return sign * 0;
+    }
+    return sign * 2 ** -14 * (fraction / 0x400);
+  }
+
+  if (exponent === 0x1f) {
+    return fraction === 0 ? sign * Infinity : Number.NaN;
+  }
+
+  return sign * 2 ** (exponent - 15) * (1 + fraction / 0x400);
+}

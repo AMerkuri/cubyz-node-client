@@ -45,7 +45,7 @@ export CUBYZ_LOG_LEVEL=debug
 npm run sandbox
 ```
 
-The example connects to the configured server, logs chat/player events, emits a greeting, and then shuts down gracefully after a few seconds.
+The example connects to the configured server, logs chat/player events, emits a greeting, and stays connected until interrupted with Ctrl+C.
 
 ## Programmatic usage
 
@@ -64,8 +64,8 @@ connection.on("connected", () => {
   console.log("Channel handshake ready");
 });
 
-connection.on("handshakeComplete", (spawnData) => {
-  console.log("Server spawn data received:", spawnData);
+connection.on("handshakeComplete", () => {
+  console.log("Handshake complete, bot is ready!");
   connection.sendChat("Hello world from tooling!");
 });
 
@@ -101,7 +101,7 @@ interface CubyzConnectionOptions {
   host: string; // Server hostname or IP
   port: number; // Server UDP port (default: 47649)
   name: string; // Player/bot name
-  version?: string; // Protocol version (default: "0.1.0-dev")
+  version?: string; // Protocol version (default: "0.0.0")
   logger?: CubyzConnectionLogger; // Custom logger (default: no-op)
   logLevel?: LogLevel; // "debug" | "info" | "warn" | "error" | "silent"
 }
@@ -110,10 +110,11 @@ interface CubyzConnectionOptions {
 #### Events
 
 - **`connected`**: Emitted when the channel handshake with the server completes
-- **`handshakeComplete(spawnData: string)`**: Emitted when the server sends spawn/world data (ZON format)
+- **`handshakeComplete()`**: Emitted when the server handshake finishes and the bot is ready
 - **`chat(message: string)`**: Emitted when a chat message is received from the server
-- **`players(names: string[])`**: Emitted when the player list updates
-- **`protocol(event: ProtocolEvent)`**: Emitted for other protocol messages (entity updates, etc.)
+- **`players(players: PlayerData[])`**: Emitted when the player list updates (each player has `id` and `name`)
+- **`entityPositions(packet: EntityPositionPacket)`**: Emitted when entity/item position updates are received
+- **`protocol(event: ProtocolEvent)`**: Emitted for other protocol messages
 - **`disconnect(event: DisconnectEvent)`**: Emitted when the connection closes (reason: "server" | "timeout")
 
 #### Methods
@@ -122,9 +123,9 @@ interface CubyzConnectionOptions {
 - **`close(options?: CloseOptions)`**: Close the connection gracefully (optionally skip server notification)
 - **`sendChat(message: string)`**: Send a chat message to the server
 - **`teleport(x: number, y: number, z: number)`**: Update player position
-- **`setRotation(yawDeg: number, pitchDeg?: number, rollDeg?: number)`**: Update player rotation (degrees)
+- **`setRotation(yawDeg: number, pitchDeg = 0, rollDeg = 0)`**: Update player rotation (degrees)
 - **`getPlayerNames(): string[]`**: Get the current list of known player names
-- **`publishPlayerState(force?: boolean)`**: Manually send a player state update
+- **`publishPlayerState(force = false)`**: Manually send a player state update
 
 ## Key exports
 
@@ -166,6 +167,35 @@ export interface PlayerState {
   position: Vector3;
   velocity: Vector3;
   rotation: Vector3;
+}
+
+export interface PlayerData {
+  id: number;
+  name: string;
+}
+
+export type PlayersEvent = PlayerData[];
+
+export interface EntitySnapshot {
+  id: number;
+  position: Vector3;
+  velocity: Vector3;
+  rotation: Vector3;
+  timestamp: number;
+}
+
+export interface ItemSnapshot {
+  index: number;
+  position: Vector3;
+  velocity: Vector3;
+  timestamp: number;
+}
+
+export interface EntityPositionPacket {
+  timestamp: number;
+  basePosition: Vector3;
+  entities: EntitySnapshot[];
+  items: ItemSnapshot[];
 }
 
 export interface ProtocolEvent {
