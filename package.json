@@ -1,6 +1,6 @@
 {
   "name": "cubyz-node-client",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cubyz Node.js Client Library",
   "type": "module",
   "main": "./dist/index.js",
