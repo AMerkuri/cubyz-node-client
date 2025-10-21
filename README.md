@@ -73,6 +73,16 @@ connection.on("players", (players) => {
   console.log("Known players:", players);
 });
 
+connection.on("entityPositions", (packet) => {
+  console.log(
+    "Entity update:",
+    packet.entities.length,
+    "entities,",
+    packet.items.length,
+    "items"
+  );
+});
+
 connection.on("chat", (message) => {
   console.log("[chat]", message);
 });
@@ -238,4 +248,4 @@ sandbox/
 
 ## Acknowledgments
 
-This project was created with the assistance of Large Language Models (GPT-5 Codex and Claude Sonnet 4.5).
+This project was created with the assistance of LLMs (GPT-5 Codex and Claude Sonnet 4.5).

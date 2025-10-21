@@ -43,4 +43,5 @@ export const INIT_RESEND_INTERVAL_MS = 100;
 export const CONFIRMATION_BATCH_SIZE = 16;
 export const KEEP_ALIVE_INTERVAL_MS = 2000;
 export const KEEP_ALIVE_TIMEOUT_MS = KEEP_ALIVE_INTERVAL_MS * 4;
+export const AWAITING_SERVER_TIMEOUT_MS = 15_000;
 export const MTU = 548; // matches minMtu from the Zig implementation

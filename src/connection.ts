@@ -12,6 +12,7 @@ import {
   INIT_RESEND_INTERVAL_MS,
   KEEP_ALIVE_INTERVAL_MS,
   KEEP_ALIVE_TIMEOUT_MS,
+  AWAITING_SERVER_TIMEOUT_MS,
   PROTOCOL,
   type SequencedChannelId,
 } from "./constants.js";
@@ -197,6 +198,7 @@ export class CubyzConnection extends EventEmitter {
   private disconnectEmitted = false;
   private initSent = false;
   private handshakeQueued = false;
+  private awaitingServerSince: number | null = null;
 
   constructor({
     host,
@@ -316,6 +318,7 @@ export class CubyzConnection extends EventEmitter {
     });
     const address = this.socket.address();
     this.log("info", `UDP socket bound on ${address.address}:${address.port}`);
+    this.awaitingServerSince = Date.now();
     this.tickTimer = setInterval(() => this.tick(), 20);
     this.sendInit();
   }
@@ -339,6 +342,7 @@ export class CubyzConnection extends EventEmitter {
         clearInterval(this.playerStateTimer);
         this.playerStateTimer = null;
       }
+      this.awaitingServerSince = null;
       this.state = "closed";
       this.socket.close();
     };
@@ -353,11 +357,18 @@ export class CubyzConnection extends EventEmitter {
   private tick(): void {
     const now = Date.now();
 
-    if (
-      this.state === "awaitingServer" &&
-      (!this.initSent || now - this.lastInitSent >= INIT_RESEND_INTERVAL_MS)
-    ) {
-      this.sendInit();
+    if (this.state === "awaitingServer") {
+      if (!this.initSent || now - this.lastInitSent >= INIT_RESEND_INTERVAL_MS) {
+        this.sendInit();
+      }
+      const started = this.awaitingServerSince ?? now;
+      this.awaitingServerSince = started;
+      if (now - started >= AWAITING_SERVER_TIMEOUT_MS) {
+        this.log("warn", "Timed out waiting for server init response");
+        this.emitDisconnect("timeout");
+        this.close({ notify: false });
+        return;
+      }
     }
 
     if (
@@ -516,6 +527,7 @@ export class CubyzConnection extends EventEmitter {
     if (this.state !== "connected") {
       this.state = "connected";
       this.lastInbound = Date.now();
+      this.awaitingServerSince = null;
       this.log("info", "Channel handshake completed with server");
       this.sendInitAck();
       this.queueHandshake();
