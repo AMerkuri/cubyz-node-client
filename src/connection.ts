@@ -3,7 +3,9 @@ import { randomInt } from "node:crypto";
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
 import { readFloat16BE, readInt32BE, writeInt32BE } from "./binary.js";
+import { prepareChatMessage } from "./chatFormat.js";
 import {
+  AWAITING_SERVER_TIMEOUT_MS,
   CHANNEL,
   CONFIRMATION_BATCH_SIZE,
   DEFAULT_VERSION,
@@ -12,7 +14,6 @@ import {
   INIT_RESEND_INTERVAL_MS,
   KEEP_ALIVE_INTERVAL_MS,
   KEEP_ALIVE_TIMEOUT_MS,
-  AWAITING_SERVER_TIMEOUT_MS,
   PROTOCOL,
   type SequencedChannelId,
 } from "./constants.js";
@@ -358,7 +359,10 @@ export class CubyzConnection extends EventEmitter {
     const now = Date.now();
 
     if (this.state === "awaitingServer") {
-      if (!this.initSent || now - this.lastInitSent >= INIT_RESEND_INTERVAL_MS) {
+      if (
+        !this.initSent ||
+        now - this.lastInitSent >= INIT_RESEND_INTERVAL_MS
+      ) {
         this.sendInit();
       }
       const started = this.awaitingServerSince ?? now;
@@ -1010,8 +1014,14 @@ export class CubyzConnection extends EventEmitter {
   }
 
   sendChat(message: string): void {
-    const payload = Buffer.from(message, "utf8");
-    this.sendChannels[CHANNEL.LOSSY].queue(PROTOCOL.CHAT, payload);
+    try {
+      const payload = prepareChatMessage(message);
+      this.log("debug", "Sending chat message:", payload.toString("utf8"));
+      this.sendChannels[CHANNEL.LOSSY].queue(PROTOCOL.CHAT, payload);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.log("warn", "Failed to send chat message:", reason);
+    }
   }
 
   teleport(x: number, y: number, z: number): void {
