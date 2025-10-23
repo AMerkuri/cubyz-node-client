@@ -33,10 +33,10 @@ async function main() {
   connection.on("handshakeComplete", () => {
     console.log("Handshake finished, sending greeting chat message...");
     connection.sendChat("Hello from the cubyz-node-client example!");
-    // setTimeout(() => {
-    //   console.log("Closing connection after demo");
-    //   connection.close();
-    // }, 5000).unref?.();
+    setTimeout(() => {
+      console.log("Closing connection after demo");
+      connection.close();
+    }, 5000).unref?.();
   });
 
   connection.on("players", (players) => {

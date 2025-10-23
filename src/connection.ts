@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomInt } from "node:crypto";
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
-import { readFloat16BE, readInt32BE, writeInt32BE } from "./binary.js";
+import { readInt32BE, writeInt32BE } from "./binary.js";
 import { prepareChatMessage } from "./chatFormat.js";
 import {
   AWAITING_SERVER_TIMEOUT_MS,
@@ -10,158 +10,57 @@ import {
   CONFIRMATION_BATCH_SIZE,
   DEFAULT_VERSION,
   HANDSHAKE_STATE,
-  type HandshakeState,
   INIT_RESEND_INTERVAL_MS,
   KEEP_ALIVE_INTERVAL_MS,
   KEEP_ALIVE_TIMEOUT_MS,
   PROTOCOL,
   type SequencedChannelId,
 } from "./constants.js";
+import {
+  DEG_TO_RAD,
+  LOG_LEVEL_ORDER,
+  type CloseOptions,
+  type ConnectionState,
+  type CubyzConnectionEvents,
+  type CubyzConnectionLogger,
+  type CubyzConnectionOptions,
+  type DisconnectEvent,
+  type EntityPositionPacket,
+  type EntitySnapshot,
+  type ItemSnapshot,
+  type LogLevel,
+  type PendingConfirmation,
+  type PlayerData,
+  type PlayerState,
+  type PlayersEvent,
+  type ProtocolEvent,
+} from "./connectionTypes.js";
+import { parseEntityPositionPacket } from "./entityParser.js";
+import {
+  buildHandshakePayload,
+  parseHandshake,
+  randomSequence,
+} from "./handshakeUtils.js";
 import { parseChannelPacket, ReceiveChannel } from "./receiveChannel.js";
 import { SendChannel } from "./sendChannel.js";
 import { parseZon, type ZonValue } from "./zon.js";
 
-const DEG_TO_RAD = Math.PI / 180;
-
-const LOG_LEVEL_ORDER = {
-  debug: 0,
-  info: 1,
-  warn: 2,
-  error: 3,
-  silent: 4,
-} as const;
-
-const ENTITY_POSITION_TYPE = {
-  NO_VELOCITY_ENTITY: 0,
-  F16_VELOCITY_ENTITY: 1,
-  F32_VELOCITY_ENTITY: 2,
-  NO_VELOCITY_ITEM: 3,
-  F16_VELOCITY_ITEM: 4,
-  F32_VELOCITY_ITEM: 5,
-} as const;
-
-type EntityPositionType =
-  (typeof ENTITY_POSITION_TYPE)[keyof typeof ENTITY_POSITION_TYPE];
-
-export type LogLevel = keyof typeof LOG_LEVEL_ORDER;
-
-function randomSequence(): number {
-  return randomInt(0, 0x7fffffff);
-}
-
-function escapeZonString(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-}
-
-function buildHandshakePayload(name: string, version: string): Buffer {
-  const safeName = escapeZonString(name);
-  const safeVersion = escapeZonString(version);
-  const zon = `.{.version = "${safeVersion}", .name = "${safeName}"}`;
-  const prefix = Buffer.from([HANDSHAKE_STATE.USER_DATA]);
-  return Buffer.concat([prefix, Buffer.from(zon, "utf8")]);
-}
-
-interface HandshakeMessage {
-  state: HandshakeState;
-  data: Buffer;
-}
-
-function parseHandshake(payload: Buffer): HandshakeMessage {
-  if (!payload || payload.length === 0) {
-    throw new Error("Handshake payload empty");
-  }
-  const state = payload[0] as HandshakeState;
-  return { state, data: payload.slice(1) };
-}
-
-export interface Vector3 {
-  x: number;
-  y: number;
-  z: number;
-}
-
-export interface PlayerState {
-  position: Vector3;
-  velocity: Vector3;
-  rotation: Vector3;
-}
-
-export interface EntitySnapshot {
-  id: number;
-  position: Vector3;
-  velocity: Vector3;
-  rotation: Vector3;
-  timestamp: number;
-}
-
-export interface ItemSnapshot {
-  index: number;
-  position: Vector3;
-  velocity: Vector3;
-  timestamp: number;
-}
-
-export interface EntityPositionPacket {
-  timestamp: number;
-  basePosition: Vector3;
-  entities: EntitySnapshot[];
-  items: ItemSnapshot[];
-}
-
-export interface ProtocolEvent {
-  channelId: number;
-  protocolId: number;
-  payload: Buffer;
-}
-
-export interface CubyzConnectionLogger {
-  info?: (...args: unknown[]) => void;
-  warn?: (...args: unknown[]) => void;
-  error?: (...args: unknown[]) => void;
-  debug?: (...args: unknown[]) => void;
-}
-
-export interface CubyzConnectionOptions {
-  host: string;
-  port: number;
-  name: string;
-  version?: string;
-  logger?: CubyzConnectionLogger;
-  logLevel?: LogLevel;
-}
-
-export interface CloseOptions {
-  notify?: boolean;
-}
-
-type ConnectionState = "awaitingServer" | "connected" | "closing" | "closed";
-
-interface PendingConfirmation {
-  channelId: number;
-  start: number;
-  timestamp: number;
-}
-
-type CubyzConnectionEvents = {
-  connected: [];
-  handshakeComplete: [string];
-  chat: [string];
-  players: [PlayersEvent];
-  entityPositions: [EntityPositionPacket];
-  protocol: [ProtocolEvent];
-  disconnect: [DisconnectEvent];
-};
-
-export interface DisconnectEvent {
-  reason: "server" | "timeout";
-}
-
-export type PlayersEvent = PlayerData[];
-
-export interface PlayerData {
-  id: number;
-  name: string;
-}
+// Re-export types for backward compatibility
+export type {
+  CloseOptions,
+  CubyzConnectionLogger,
+  CubyzConnectionOptions,
+  DisconnectEvent,
+  EntityPositionPacket,
+  EntitySnapshot,
+  ItemSnapshot,
+  LogLevel,
+  PlayerData,
+  PlayerState,
+  PlayersEvent,
+  ProtocolEvent,
+  Vector3,
+} from "./connectionTypes.js";
 
 export class CubyzConnection extends EventEmitter {
   public readonly host: string;
@@ -789,166 +688,32 @@ export class CubyzConnection extends EventEmitter {
   }
 
   private handleEntityPosition(payload: Buffer): void {
-    const headerSize = 2 + 8 * 3;
-    if (payload.length < headerSize) {
-      this.log("warn", "Entity position payload too short", {
-        length: payload.length,
-      });
+    const result = parseEntityPositionPacket(payload, this.log.bind(this));
+    if (!result) {
       return;
     }
 
-    let offset = 0;
-    const ensure = (size: number) => {
-      if (offset + size > payload.length) {
-        throw new Error(
-          `Entity position packet truncated, needed ${size} bytes at offset ${offset}`,
-        );
-      }
-    };
-
-    const readVec3f32 = (): Vector3 => {
-      ensure(12);
-      const vector: Vector3 = {
-        x: payload.readFloatBE(offset),
-        y: payload.readFloatBE(offset + 4),
-        z: payload.readFloatBE(offset + 8),
-      };
-      offset += 12;
-      return vector;
-    };
-
-    const readVec3f16 = (): Vector3 => {
-      ensure(6);
-      const vector: Vector3 = {
-        x: readFloat16BE(payload, offset),
-        y: readFloat16BE(payload, offset + 2),
-        z: readFloat16BE(payload, offset + 4),
-      };
-      offset += 6;
-      return vector;
-    };
-
-    try {
-      ensure(2);
-      const timestamp = payload.readInt16BE(offset);
-      offset += 2;
-      ensure(24);
-      const basePosition: Vector3 = {
-        x: payload.readDoubleBE(offset),
-        y: payload.readDoubleBE(offset + 8),
-        z: payload.readDoubleBE(offset + 16),
-      };
-      offset += 24;
-
-      const nextEntityStates = new Map<number, EntitySnapshot>();
-      const nextItemStates = new Map<number, ItemSnapshot>();
-      const entitiesForEvent: EntitySnapshot[] = [];
-      const itemsForEvent: ItemSnapshot[] = [];
-
-      while (offset < payload.length) {
-        ensure(1);
-        const type = payload[offset] as EntityPositionType;
-        offset += 1;
-
-        let velocity: Vector3 = { x: 0, y: 0, z: 0 };
-
-        if (
-          type === ENTITY_POSITION_TYPE.F16_VELOCITY_ENTITY ||
-          type === ENTITY_POSITION_TYPE.F16_VELOCITY_ITEM
-        ) {
-          velocity = readVec3f16();
-        } else if (
-          type === ENTITY_POSITION_TYPE.F32_VELOCITY_ENTITY ||
-          type === ENTITY_POSITION_TYPE.F32_VELOCITY_ITEM
-        ) {
-          velocity = readVec3f32();
-        }
-
-        switch (type) {
-          case ENTITY_POSITION_TYPE.NO_VELOCITY_ENTITY:
-          case ENTITY_POSITION_TYPE.F16_VELOCITY_ENTITY:
-          case ENTITY_POSITION_TYPE.F32_VELOCITY_ENTITY: {
-            ensure(4);
-            const id = payload.readUInt32BE(offset);
-            offset += 4;
-            const delta = readVec3f32();
-            const rotation = readVec3f32();
-            const position: Vector3 = {
-              x: basePosition.x + delta.x,
-              y: basePosition.y + delta.y,
-              z: basePosition.z + delta.z,
-            };
-            const state: EntitySnapshot = {
-              id,
-              position,
-              velocity,
-              rotation,
-              timestamp,
-            };
-            nextEntityStates.set(id, state);
-            entitiesForEvent.push({
-              id,
-              position: { ...position },
-              velocity: { ...velocity },
-              rotation: { ...rotation },
-              timestamp,
-            });
-            break;
-          }
-          case ENTITY_POSITION_TYPE.NO_VELOCITY_ITEM:
-          case ENTITY_POSITION_TYPE.F16_VELOCITY_ITEM:
-          case ENTITY_POSITION_TYPE.F32_VELOCITY_ITEM: {
-            ensure(2);
-            const index = payload.readUInt16BE(offset);
-            offset += 2;
-            const delta = readVec3f32();
-            const position: Vector3 = {
-              x: basePosition.x + delta.x,
-              y: basePosition.y + delta.y,
-              z: basePosition.z + delta.z,
-            };
-            const state: ItemSnapshot = {
-              index,
-              position,
-              velocity,
-              timestamp,
-            };
-            nextItemStates.set(index, state);
-            itemsForEvent.push({
-              index,
-              position: { ...position },
-              velocity: { ...velocity },
-              timestamp,
-            });
-            break;
-          }
-          default: {
-            this.log("warn", "Unknown entity position entry type", { type });
-            return;
-          }
-        }
-      }
-
-      this.entityStates.clear();
-      for (const [id, state] of nextEntityStates) {
-        this.entityStates.set(id, state);
-      }
-
-      this.itemStates.clear();
-      for (const [index, state] of nextItemStates) {
-        this.itemStates.set(index, state);
-      }
-
-      const packet: EntityPositionPacket = {
-        timestamp,
-        basePosition: { ...basePosition },
-        entities: entitiesForEvent,
-        items: itemsForEvent,
-      };
-      this.emit("entityPositions", packet);
-    } catch (err) {
-      this.log("warn", "Failed to decode entity position payload", err);
+    // Update internal state with parsed entities
+    this.entityStates.clear();
+    const entityStatesMap = (result as unknown as { _entityStates: Map<number, EntitySnapshot> })._entityStates;
+    for (const [id, state] of entityStatesMap) {
+      this.entityStates.set(id, state);
     }
+
+    this.itemStates.clear();
+    const itemStatesMap = (result as unknown as { _itemStates: Map<number, ItemSnapshot> })._itemStates;
+    for (const [index, state] of itemStatesMap) {
+      this.itemStates.set(index, state);
+    }
+
+    // Emit the packet without internal state maps
+    const packet: EntityPositionPacket = {
+      timestamp: result.timestamp,
+      basePosition: result.basePosition,
+      entities: result.entities,
+      items: result.items,
+    };
+    this.emit("entityPositions", packet);
   }
 
   private emitPlayers(): void {
