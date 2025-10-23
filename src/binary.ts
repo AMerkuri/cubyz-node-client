@@ -4,16 +4,30 @@ export function encodeVarInt(value: number): Buffer {
   if (value < 0) {
     throw new RangeError("VarInt cannot encode negative values");
   }
+  // Cubyz uses big-endian varint encoding (MSB first)
   const bytes: number[] = [];
-  let remaining = value >>> 0;
-  do {
-    let byte = remaining & 0x7f;
-    remaining >>>= 7;
-    if (remaining !== 0) {
+  const val = value >>> 0;
+
+  if (val === 0) {
+    return Buffer.from([0]);
+  }
+
+  // Calculate number of bits needed
+  const bits = val === 0 ? 1 : Math.floor(Math.log2(val)) + 1;
+  // Calculate number of 7-bit chunks needed
+  const numBytes = Math.ceil(bits / 7);
+
+  // Encode big-endian (most significant byte first)
+  for (let i = 0; i < numBytes; i++) {
+    const shift = 7 * (numBytes - i - 1);
+    let byte = (val >>> shift) & 0x7f;
+    // Set continuation bit on all bytes except the last
+    if (i < numBytes - 1) {
       byte |= 0x80;
     }
     bytes.push(byte);
-  } while (remaining !== 0);
+  }
+
   return Buffer.from(bytes);
 }
 
@@ -21,18 +35,21 @@ export function decodeVarInt(
   buffer: Buffer,
   offset = 0,
 ): { value: number; consumed: number } {
+  // Cubyz uses big-endian varint decoding (MSB first)
   let value = 0;
   let consumed = 0;
-  let shift = 0;
+
   while (offset + consumed < buffer.length) {
     const byte = buffer[offset + consumed];
-    value |= (byte & 0x7f) << shift;
+    value = (value << 7) | (byte & 0x7f);
     consumed += 1;
+
+    // Last byte has no continuation bit
     if ((byte & 0x80) === 0) {
       return { value: value >>> 0, consumed };
     }
-    shift += 7;
-    if (shift >= 35) {
+
+    if (consumed >= 5) {
       throw new Error("VarInt decoding failed: value too large");
     }
   }
