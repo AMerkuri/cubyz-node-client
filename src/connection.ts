@@ -5,6 +5,23 @@ import { EventEmitter } from "node:events";
 import { readInt32BE, writeInt32BE } from "./binary.js";
 import { prepareChatMessage } from "./chatFormat.js";
 import {
+  type CloseOptions,
+  type ConnectionState,
+  type CubyzConnectionEvents,
+  type CubyzConnectionLogger,
+  type CubyzConnectionOptions,
+  DEG_TO_RAD,
+  type DisconnectEvent,
+  type EntityPositionPacket,
+  type EntitySnapshot,
+  type ItemSnapshot,
+  LOG_LEVEL_ORDER,
+  type LogLevel,
+  type PendingConfirmation,
+  type PlayerData,
+  type PlayerState,
+} from "./connectionTypes.js";
+import {
   AWAITING_SERVER_TIMEOUT_MS,
   CHANNEL,
   CONFIRMATION_BATCH_SIZE,
@@ -16,25 +33,6 @@ import {
   PROTOCOL,
   type SequencedChannelId,
 } from "./constants.js";
-import {
-  DEG_TO_RAD,
-  LOG_LEVEL_ORDER,
-  type CloseOptions,
-  type ConnectionState,
-  type CubyzConnectionEvents,
-  type CubyzConnectionLogger,
-  type CubyzConnectionOptions,
-  type DisconnectEvent,
-  type EntityPositionPacket,
-  type EntitySnapshot,
-  type ItemSnapshot,
-  type LogLevel,
-  type PendingConfirmation,
-  type PlayerData,
-  type PlayerState,
-  type PlayersEvent,
-  type ProtocolEvent,
-} from "./connectionTypes.js";
 import { parseEntityPositionPacket } from "./entityParser.js";
 import {
   buildHandshakePayload,
@@ -695,13 +693,17 @@ export class CubyzConnection extends EventEmitter {
 
     // Update internal state with parsed entities
     this.entityStates.clear();
-    const entityStatesMap = (result as unknown as { _entityStates: Map<number, EntitySnapshot> })._entityStates;
+    const entityStatesMap = (
+      result as unknown as { _entityStates: Map<number, EntitySnapshot> }
+    )._entityStates;
     for (const [id, state] of entityStatesMap) {
       this.entityStates.set(id, state);
     }
 
     this.itemStates.clear();
-    const itemStatesMap = (result as unknown as { _itemStates: Map<number, ItemSnapshot> })._itemStates;
+    const itemStatesMap = (
+      result as unknown as { _itemStates: Map<number, ItemSnapshot> }
+    )._itemStates;
     for (const [index, state] of itemStatesMap) {
       this.itemStates.set(index, state);
     }

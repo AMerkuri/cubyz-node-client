@@ -1,4 +1,4 @@
-import { Buffer } from "node:buffer";
+import type { Buffer } from "node:buffer";
 import { readFloat16BE } from "./binary.js";
 import {
   ENTITY_POSITION_TYPE,
@@ -10,9 +10,7 @@ import {
   type Vector3,
 } from "./connectionTypes.js";
 
-export interface EntityParserLogger {
-  (level: LogLevel, ...args: unknown[]): void;
-}
+export type EntityParserLogger = (level: LogLevel, ...args: unknown[]) => void;
 
 export function parseEntityPositionPacket(
   payload: Buffer,

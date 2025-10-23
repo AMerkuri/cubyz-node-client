@@ -1,5 +1,4 @@
-import { Buffer } from "node:buffer";
-import type { SequencedChannelId } from "./constants.js";
+import type { Buffer } from "node:buffer";
 
 export const DEG_TO_RAD = Math.PI / 180;
 
@@ -85,7 +84,11 @@ export interface CloseOptions {
   notify?: boolean;
 }
 
-export type ConnectionState = "awaitingServer" | "connected" | "closing" | "closed";
+export type ConnectionState =
+  | "awaitingServer"
+  | "connected"
+  | "closing"
+  | "closed";
 
 export interface PendingConfirmation {
   channelId: number;
