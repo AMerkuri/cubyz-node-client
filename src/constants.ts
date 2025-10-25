@@ -16,9 +16,10 @@ export type SequencedChannelId =
 
 export const PROTOCOL = {
   HANDSHAKE: 1,
-  ENTITY_POSITION: 6,
-  ENTITY: 8,
   PLAYER_STATE: 4,
+  ENTITY_POSITION: 6,
+  BLOCK_UPDATE: 7,
+  ENTITY: 8,
   CHAT: 10,
 } as const;
 

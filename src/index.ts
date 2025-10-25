@@ -1,6 +1,7 @@
 export { addSeq, decodeVarInt, encodeVarInt, seqLessThan } from "./binary.js";
 export { countVisibleCharacters, prepareChatMessage } from "./chatFormat.js";
 export type {
+  BlockUpdate,
   CloseOptions,
   CubyzConnectionLogger,
   CubyzConnectionOptions,

@@ -51,6 +51,12 @@ export interface ItemSnapshot {
   timestamp: number;
 }
 
+export interface BlockUpdate {
+  position: Vector3;
+  block: number;
+  blockEntityData: Buffer;
+}
+
 export interface EntityPositionPacket {
   timestamp: number;
   basePosition: Vector3;
@@ -100,6 +106,7 @@ export type CubyzConnectionEvents = {
   connected: [];
   handshakeComplete: [string];
   chat: [string];
+  blockUpdate: [BlockUpdate[]];
   players: [PlayersEvent];
   entityPositions: [EntityPositionPacket];
   protocol: [ProtocolEvent];

@@ -33,7 +33,7 @@ Compilation outputs ESM modules alongside type declarations in `dist/`.
 
 ## Quick start example
 
-You can run the included sandbox example to see the connection flow end-to-end:
+You can run the included sandbox example to see the connection flow:
 
 ```bash
 # Optional overrides for host/port/player name
@@ -87,6 +87,17 @@ connection.on("chat", (message) => {
   console.log("[chat]", message);
 });
 
+connection.on("blockUpdate", (updates) => {
+  for (const update of updates) {
+    console.log(
+      "Block changed at",
+      update.position,
+      "to block ID",
+      update.block
+    );
+  }
+});
+
 connection.on("protocol", (event) => {
   console.log("Protocol event:", event.protocolId);
 });
@@ -122,6 +133,7 @@ interface CubyzConnectionOptions {
 - **`connected`**: Emitted when the channel handshake with the server completes
 - **`handshakeComplete()`**: Emitted when the server handshake finishes and the bot is ready
 - **`chat(message: string)`**: Emitted when a chat message is received from the server
+- **`blockUpdate(updates: BlockUpdate[])`**: Emitted when blocks are placed or broken (includes position, block ID, and optional block entity data)
 - **`players(players: PlayerData[])`**: Emitted when the player list updates (each player has `id` and `name`)
 - **`entityPositions(packet: EntityPositionPacket)`**: Emitted when entity/item position updates are received
 - **`protocol(event: ProtocolEvent)`**: Emitted for other protocol messages
@@ -199,6 +211,12 @@ export interface ItemSnapshot {
   position: Vector3;
   velocity: Vector3;
   timestamp: number;
+}
+
+export interface BlockUpdate {
+  position: Vector3;
+  block: number; // Block type ID
+  blockEntityData: Buffer; // Additional block entity data (may be empty)
 }
 
 export interface EntityPositionPacket {

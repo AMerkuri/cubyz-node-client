@@ -2,9 +2,10 @@ import { Buffer } from "node:buffer";
 import { randomInt } from "node:crypto";
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
-import { readInt32BE, writeInt32BE } from "./binary.js";
+import { decodeVarInt, readInt32BE, writeInt32BE } from "./binary.js";
 import { prepareChatMessage } from "./chatFormat.js";
 import {
+  type BlockUpdate,
   type CloseOptions,
   type ConnectionState,
   type CubyzConnectionEvents,
@@ -45,6 +46,7 @@ import { parseZon, type ZonValue } from "./zon.js";
 
 // Re-export types for backward compatibility
 export type {
+  BlockUpdate,
   CloseOptions,
   CubyzConnectionLogger,
   CubyzConnectionOptions,
@@ -497,6 +499,10 @@ export class CubyzConnection extends EventEmitter {
         this.handleEntityPosition(payload);
         this.emit("protocol", { channelId, protocolId, payload });
         break;
+      case PROTOCOL.BLOCK_UPDATE:
+        this.handleBlockUpdate(payload);
+        this.emit("protocol", { channelId, protocolId, payload });
+        break;
       case PROTOCOL.ENTITY:
         this.handleEntityUpdate(payload);
         this.emit("protocol", { channelId, protocolId, payload });
@@ -716,6 +722,50 @@ export class CubyzConnection extends EventEmitter {
       items: result.items,
     };
     this.emit("entityPositions", packet);
+  }
+
+  private handleBlockUpdate(payload: Buffer): void {
+    const updates: BlockUpdate[] = [];
+    let offset = 0;
+
+    while (offset + 20 <= payload.length) {
+      const x = payload.readInt32BE(offset);
+      offset += 4;
+      const y = payload.readInt32BE(offset);
+      offset += 4;
+      const z = payload.readInt32BE(offset);
+      offset += 4;
+      const block = payload.readUInt32BE(offset);
+      offset += 4;
+
+      // Read block entity data length (usize - platform dependent, use varint)
+      const { value: blockEntityDataLen, consumed } = decodeVarInt(
+        payload,
+        offset,
+      );
+      offset += consumed;
+
+      if (offset + blockEntityDataLen > payload.length) {
+        this.log("warn", "Block update payload truncated");
+        break;
+      }
+
+      const blockEntityData = payload.slice(
+        offset,
+        offset + blockEntityDataLen,
+      );
+      offset += blockEntityDataLen;
+
+      updates.push({
+        position: { x, y, z },
+        block,
+        blockEntityData,
+      });
+    }
+
+    if (updates.length > 0) {
+      this.emit("blockUpdate", updates);
+    }
   }
 
   private emitPlayers(): void {

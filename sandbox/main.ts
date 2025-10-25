@@ -53,6 +53,12 @@ async function main() {
     console.log(`[chat] ${message}`);
   });
 
+  connection.on("blockUpdate", (updates) => {
+    for (const update of updates) {
+      console.log({ update });
+    }
+  });
+
   connection.on("disconnect", (event) => {
     console.log(`[disconnect] reason=${event.reason}`);
   });
