@@ -20,6 +20,7 @@ export const PROTOCOL = {
   ENTITY_POSITION: 6,
   BLOCK_UPDATE: 7,
   ENTITY: 8,
+  GENERIC_UPDATE: 9,
   CHAT: 10,
 } as const;
 

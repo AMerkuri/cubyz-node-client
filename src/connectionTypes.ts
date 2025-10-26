@@ -57,6 +57,66 @@ export interface BlockUpdate {
   blockEntityData: Buffer;
 }
 
+export const GENERIC_UPDATE_TYPE = {
+  GAMEMODE: 0,
+  TELEPORT: 1,
+  WORLD_EDIT_POS: 2,
+  TIME: 3,
+  BIOME: 4,
+} as const;
+
+export type GenericUpdateType =
+  (typeof GENERIC_UPDATE_TYPE)[keyof typeof GENERIC_UPDATE_TYPE];
+
+export const GAMEMODE = {
+  SURVIVAL: 0,
+  CREATIVE: 1,
+} as const;
+
+export type Gamemode = (typeof GAMEMODE)[keyof typeof GAMEMODE];
+
+export const WORLD_EDIT_POSITION = {
+  SELECTED_POS1: 0,
+  SELECTED_POS2: 1,
+  CLEAR: 2,
+} as const;
+
+export type WorldEditPositionType =
+  (typeof WORLD_EDIT_POSITION)[keyof typeof WORLD_EDIT_POSITION];
+
+export interface GamemodeUpdate {
+  type: "gamemode";
+  gamemode: Gamemode;
+}
+
+export interface TeleportUpdate {
+  type: "teleport";
+  position: Vector3;
+}
+
+export interface WorldEditPosUpdate {
+  type: "worldEditPos";
+  positionType: WorldEditPositionType;
+  position: Vector3 | null;
+}
+
+export interface TimeUpdate {
+  type: "time";
+  time: bigint;
+}
+
+export interface BiomeUpdate {
+  type: "biome";
+  biomeId: number;
+}
+
+export type GenericUpdate =
+  | GamemodeUpdate
+  | TeleportUpdate
+  | WorldEditPosUpdate
+  | TimeUpdate
+  | BiomeUpdate;
+
 export interface EntityPositionPacket {
   timestamp: number;
   basePosition: Vector3;
@@ -109,6 +169,7 @@ export type CubyzConnectionEvents = {
   blockUpdate: [BlockUpdate[]];
   players: [PlayersEvent];
   entityPositions: [EntityPositionPacket];
+  genericUpdate: [GenericUpdate];
   protocol: [ProtocolEvent];
   disconnect: [DisconnectEvent];
 };

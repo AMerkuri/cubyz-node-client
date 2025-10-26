@@ -15,12 +15,15 @@ import {
   type DisconnectEvent,
   type EntityPositionPacket,
   type EntitySnapshot,
+  type Gamemode,
+  GENERIC_UPDATE_TYPE,
   type ItemSnapshot,
   LOG_LEVEL_ORDER,
   type LogLevel,
   type PendingConfirmation,
   type PlayerData,
   type PlayerState,
+  WORLD_EDIT_POSITION,
 } from "./connectionTypes.js";
 import {
   AWAITING_SERVER_TIMEOUT_MS,
@@ -46,6 +49,7 @@ import { parseZon, type ZonValue } from "./zon.js";
 
 // Re-export types for backward compatibility
 export type {
+  BiomeUpdate,
   BlockUpdate,
   CloseOptions,
   CubyzConnectionLogger,
@@ -53,14 +57,21 @@ export type {
   DisconnectEvent,
   EntityPositionPacket,
   EntitySnapshot,
+  Gamemode,
+  GamemodeUpdate,
+  GenericUpdate,
   ItemSnapshot,
   LogLevel,
   PlayerData,
   PlayerState,
   PlayersEvent,
   ProtocolEvent,
+  TeleportUpdate,
+  TimeUpdate,
   Vector3,
+  WorldEditPosUpdate,
 } from "./connectionTypes.js";
+export { GAMEMODE } from "./connectionTypes.js";
 
 export class CubyzConnection extends EventEmitter {
   public readonly host: string;
@@ -491,6 +502,7 @@ export class CubyzConnection extends EventEmitter {
     protocolId: number,
     payload: Buffer,
   ): Promise<void> {
+    // this.log("debug", `handleProtocol: channelId=${channelId}, protocolId=${protocolId}, payloadLen=${payload.length}`);
     switch (protocolId) {
       case PROTOCOL.HANDSHAKE:
         await this.handleHandshake(payload);
@@ -505,6 +517,10 @@ export class CubyzConnection extends EventEmitter {
         break;
       case PROTOCOL.ENTITY:
         this.handleEntityUpdate(payload);
+        this.emit("protocol", { channelId, protocolId, payload });
+        break;
+      case PROTOCOL.GENERIC_UPDATE:
+        this.handleGenericUpdate(payload);
         this.emit("protocol", { channelId, protocolId, payload });
         break;
       case PROTOCOL.CHAT:
@@ -765,6 +781,120 @@ export class CubyzConnection extends EventEmitter {
 
     if (updates.length > 0) {
       this.emit("blockUpdate", updates);
+    }
+  }
+
+  private handleGenericUpdate(payload: Buffer): void {
+    if (payload.length < 1) {
+      this.log("warn", "Generic update payload too short");
+      return;
+    }
+
+    const updateType = payload.readUInt8(0);
+    let offset = 1;
+
+    this.log(
+      "debug",
+      `handleGenericUpdate: type=${updateType}, payloadLen=${payload.length}`,
+    );
+
+    try {
+      switch (updateType) {
+        case GENERIC_UPDATE_TYPE.GAMEMODE: {
+          if (offset + 1 > payload.length) {
+            this.log("warn", "Gamemode update payload too short");
+            return;
+          }
+          const gamemode = payload.readUInt8(offset) as Gamemode;
+          this.log("debug", `Gamemode update: ${gamemode}`);
+          this.emit("genericUpdate", {
+            type: "gamemode",
+            gamemode,
+          });
+          break;
+        }
+
+        case GENERIC_UPDATE_TYPE.TELEPORT: {
+          if (offset + 24 > payload.length) {
+            this.log("warn", "Teleport update payload too short");
+            return;
+          }
+          const x = payload.readDoubleBE(offset);
+          offset += 8;
+          const y = payload.readDoubleBE(offset);
+          offset += 8;
+          const z = payload.readDoubleBE(offset);
+          this.emit("genericUpdate", {
+            type: "teleport",
+            position: { x, y, z },
+          });
+          break;
+        }
+
+        case GENERIC_UPDATE_TYPE.WORLD_EDIT_POS: {
+          if (offset + 1 > payload.length) {
+            this.log("warn", "World edit pos update payload too short");
+            return;
+          }
+          const posType = payload.readUInt8(offset);
+          offset += 1;
+
+          let position: { x: number; y: number; z: number } | null = null;
+          if (
+            posType === WORLD_EDIT_POSITION.SELECTED_POS1 ||
+            posType === WORLD_EDIT_POSITION.SELECTED_POS2
+          ) {
+            if (offset + 12 > payload.length) {
+              this.log("warn", "World edit pos update payload too short");
+              return;
+            }
+            const x = payload.readInt32BE(offset);
+            offset += 4;
+            const y = payload.readInt32BE(offset);
+            offset += 4;
+            const z = payload.readInt32BE(offset);
+            position = { x, y, z };
+          }
+
+          this.emit("genericUpdate", {
+            type: "worldEditPos",
+            positionType: posType as 0 | 1 | 2,
+            position,
+          });
+          break;
+        }
+
+        case GENERIC_UPDATE_TYPE.TIME: {
+          if (offset + 8 > payload.length) {
+            this.log("warn", "Time update payload too short");
+            return;
+          }
+          const time = payload.readBigInt64BE(offset);
+          this.emit("genericUpdate", {
+            type: "time",
+            time,
+          });
+          break;
+        }
+
+        case GENERIC_UPDATE_TYPE.BIOME: {
+          if (offset + 4 > payload.length) {
+            this.log("warn", "Biome update payload too short");
+            return;
+          }
+          const biomeId = payload.readUInt32BE(offset);
+          this.emit("genericUpdate", {
+            type: "biome",
+            biomeId,
+          });
+          break;
+        }
+
+        default:
+          this.log("debug", `Unknown generic update type: ${updateType}`);
+      }
+    } catch (err) {
+      this.log("error", "Failed to parse generic update:", err);
     }
   }
 
