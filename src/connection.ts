@@ -59,6 +59,7 @@ import { parseZon, type ZonValue } from "./zon.js";
 export type {
   BiomeUpdate,
   BlockUpdate,
+  ClearUpdate,
   CloseOptions,
   CubyzConnectionLogger,
   CubyzConnectionOptions,
@@ -70,6 +71,7 @@ export type {
   GenericUpdate,
   ItemSnapshot,
   LogLevel,
+  ParticlesUpdate,
   PlayerData,
   PlayerState,
   PlayersEvent,
@@ -80,32 +82,6 @@ export type {
   WorldEditPosUpdate,
 } from "./connectionTypes.js";
 export { GAMEMODE } from "./connectionTypes.js";
-
-// Internal augmentation to carry verificationData on SecureChannelHandler.
-interface SecureChannelHandlerWithVerification extends SecureChannelHandler {
-  verificationDataBuffer?: Buffer;
-}
-
-// Decode a MSB-first varint from the buffer at the given offset.
-function decodeMsbVarInt(
-  buf: Buffer,
-  offset: number,
-): { value: number; consumed: number } {
-  let value = 0;
-  let consumed = 0;
-  while (offset + consumed < buf.length) {
-    const byte = buf[offset + consumed];
-    value = (value << 7) | (byte & 0x7f);
-    consumed += 1;
-    if ((byte & 0x80) === 0) {
-      return { value, consumed };
-    }
-    if (consumed > 5) {
-      throw new Error("MSB varint exceeds 5 bytes");
-    }
-  }
-  throw new Error("MSB varint truncated");
-}
 
 export class CubyzConnection extends EventEmitter {
   public readonly host: string;
@@ -469,7 +445,7 @@ export class CubyzConnection extends EventEmitter {
       this.log("error", "Secure channel error:", err);
     };
 
-    handler.onSecureConnect = (verificationData: Buffer) => {
+    handler.onSecureConnect = (_verificationData: Buffer) => {
       this.log("debug", "TLS handshake complete, sending userData");
       if (!this.identity) {
         this.log("error", "No identity loaded before TLS handshake completed");
@@ -481,9 +457,6 @@ export class CubyzConnection extends EventEmitter {
         this.identity,
       );
       handler.sendMessage(PROTOCOL.HANDSHAKE, payload);
-      // Store verificationData on the handler for signature use later.
-      (handler as SecureChannelHandlerWithVerification).verificationDataBuffer =
-        verificationData;
     };
 
     handler.onMessage = (msg: { protocolId: number; payload: Buffer }) => {
@@ -756,13 +729,12 @@ export class CubyzConnection extends EventEmitter {
     }
 
     const verificationData =
-      (this.secureChannel as SecureChannelHandlerWithVerification)
-        .verificationDataBuffer ?? Buffer.alloc(0);
+      this.secureChannel.verificationDataBuffer ?? Buffer.alloc(0);
 
     // Parse signatureRequest:
     // [varint: len of algo1 name][algo1 name bytes][varint: len of algo2 name (0 if none)][algo2 name bytes if present]
     let offset = 0;
-    const algo1LenResult = decodeMsbVarInt(data, offset);
+    const algo1LenResult = decodeVarInt(data, offset);
     offset += algo1LenResult.consumed;
     const algo1Name = data
       .slice(offset, offset + algo1LenResult.value)
@@ -771,7 +743,7 @@ export class CubyzConnection extends EventEmitter {
 
     let algo2Name = "";
     if (offset < data.length) {
-      const algo2LenResult = decodeMsbVarInt(data, offset);
+      const algo2LenResult = decodeVarInt(data, offset);
       offset += algo2LenResult.consumed;
       if (algo2LenResult.value > 0) {
         algo2Name = data
@@ -841,8 +813,11 @@ export class CubyzConnection extends EventEmitter {
       return;
     }
     let changed = false;
-    for (const entry of parsed) {
+    let nullIndex = -1;
+    for (let i = 0; i < parsed.length; i++) {
+      const entry = parsed[i];
       if (entry === null) {
+        nullIndex = i;
         break;
       }
       if (typeof entry === "number") {
@@ -887,6 +862,20 @@ export class CubyzConnection extends EventEmitter {
       }
       this.emitPlayers();
     }
+
+    // Process item drops after the null sentinel.
+    // Number entries are removals (by u16 index); object entries are additions
+    // or updates whose positions will arrive via the entityPositions protocol.
+    if (nullIndex >= 0) {
+      for (let i = nullIndex + 1; i < parsed.length; i++) {
+        const entry = parsed[i];
+        if (typeof entry === "number") {
+          this.itemStates.delete(entry);
+        }
+        // Object entries (add/update) don't carry position data here;
+        // their positions are delivered via protocol 6 (ENTITY_POSITION).
+      }
+    }
   }
 
   private handleEntityPosition(payload: Buffer): void {
@@ -895,24 +884,16 @@ export class CubyzConnection extends EventEmitter {
       return;
     }
 
-    // Update internal state with parsed entities
     this.entityStates.clear();
-    const entityStatesMap = (
-      result as unknown as { _entityStates: Map<number, EntitySnapshot> }
-    )._entityStates;
-    for (const [id, state] of entityStatesMap) {
+    for (const [id, state] of result.entityStates) {
       this.entityStates.set(id, state);
     }
 
     this.itemStates.clear();
-    const itemStatesMap = (
-      result as unknown as { _itemStates: Map<number, ItemSnapshot> }
-    )._itemStates;
-    for (const [index, state] of itemStatesMap) {
+    for (const [index, state] of result.itemStates) {
       this.itemStates.set(index, state);
     }
 
-    // Emit the packet without internal state maps
     const packet: EntityPositionPacket = {
       timestamp: result.timestamp,
       basePosition: result.basePosition,
@@ -936,12 +917,13 @@ export class CubyzConnection extends EventEmitter {
       const block = payload.readUInt32BE(offset);
       offset += 4;
 
-      // Read block entity data length (usize - platform dependent, use varint)
-      const { value: blockEntityDataLen, consumed } = decodeVarInt(
-        payload,
-        offset,
-      );
-      offset += consumed;
+      // blockEntityData length is written as usize (8 bytes, big-endian) by the Zig server.
+      if (offset + 8 > payload.length) {
+        this.log("warn", "Block update payload truncated (no room for length)");
+        break;
+      }
+      const blockEntityDataLen = Number(payload.readBigUInt64BE(offset));
+      offset += 8;
 
       if (offset + blockEntityDataLen > payload.length) {
         this.log("warn", "Block update payload truncated");
@@ -1069,6 +1051,72 @@ export class CubyzConnection extends EventEmitter {
             type: "biome",
             biomeId,
           });
+          break;
+        }
+
+        case GENERIC_UPDATE_TYPE.PARTICLES: {
+          // [varint u16: particleIdLen][particleId][f64 x][f64 y][f64 z][u8 collides][varint u32: count][varint usize: spawnZonLen][spawnZon]
+          const particleIdLenResult = decodeVarInt(payload, offset);
+          offset += particleIdLenResult.consumed;
+          const particleIdLen = particleIdLenResult.value;
+          if (offset + particleIdLen > payload.length) {
+            this.log("warn", "Particles update payload truncated (particleId)");
+            return;
+          }
+          const particleId = payload
+            .slice(offset, offset + particleIdLen)
+            .toString("utf8");
+          offset += particleIdLen;
+          if (offset + 24 > payload.length) {
+            this.log("warn", "Particles update payload truncated (position)");
+            return;
+          }
+          const px = payload.readDoubleBE(offset);
+          offset += 8;
+          const py = payload.readDoubleBE(offset);
+          offset += 8;
+          const pz = payload.readDoubleBE(offset);
+          offset += 8;
+          if (offset + 1 > payload.length) {
+            this.log("warn", "Particles update payload truncated (collides)");
+            return;
+          }
+          const collides = payload.readUInt8(offset) !== 0;
+          offset += 1;
+          const countResult = decodeVarInt(payload, offset);
+          offset += countResult.consumed;
+          const count = countResult.value;
+          const spawnZonLenResult = decodeVarInt(payload, offset);
+          offset += spawnZonLenResult.consumed;
+          const spawnZonLen = spawnZonLenResult.value;
+          if (offset + spawnZonLen > payload.length) {
+            this.log("warn", "Particles update payload truncated (spawnZon)");
+            return;
+          }
+          const spawnZon = payload
+            .slice(offset, offset + spawnZonLen)
+            .toString("utf8");
+          this.emit("genericUpdate", {
+            type: "particles",
+            particleId,
+            position: { x: px, y: py, z: pz },
+            collides,
+            count,
+            spawnZon,
+          });
+          break;
+        }
+
+        case GENERIC_UPDATE_TYPE.CLEAR: {
+          // [u8 clearType: 0=chat]
+          if (offset + 1 > payload.length) {
+            this.log("warn", "Clear update payload too short");
+            return;
+          }
+          const clearTypeByte = payload.readUInt8(offset);
+          // Only clearType 0 (chat) is defined by the server.
+          const clearType = clearTypeByte === 0 ? "chat" : "chat";
+          this.emit("genericUpdate", { type: "clear", clearType });
           break;
         }
 

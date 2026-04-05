@@ -1,8 +1,8 @@
-export { addSeq, decodeVarInt, encodeVarInt, seqLessThan } from "./binary.js";
 export { countVisibleCharacters, prepareChatMessage } from "./chatFormat.js";
 export type {
   BiomeUpdate,
   BlockUpdate,
+  ClearUpdate,
   CloseOptions,
   CubyzConnectionLogger,
   CubyzConnectionOptions,
@@ -14,7 +14,10 @@ export type {
   GenericUpdate,
   ItemSnapshot,
   LogLevel,
+  ParticlesUpdate,
+  PlayerData,
   PlayerState,
+  PlayersEvent,
   ProtocolEvent,
   TeleportUpdate,
   TimeUpdate,
@@ -23,7 +26,3 @@ export type {
 } from "./connection.js";
 export { CubyzConnection, GAMEMODE } from "./connection.js";
 export * from "./constants.js";
-export { ReceiveChannel } from "./receiveChannel.js";
-export { SendChannel } from "./sendChannel.js";
-export type { ZonValue } from "./zon.js";
-export { parseZon } from "./zon.js";

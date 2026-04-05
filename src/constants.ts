@@ -40,7 +40,7 @@ export type HandshakeState =
   (typeof HANDSHAKE_STATE)[keyof typeof HANDSHAKE_STATE];
 
 export const DEFAULT_PORT = 47649;
-export const DEFAULT_VERSION = "0.0.0";
+export const DEFAULT_VERSION = "0.3.0";
 
 export const RESEND_TIMEOUT_MS = 500;
 export const INIT_RESEND_INTERVAL_MS = 100;

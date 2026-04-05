@@ -530,6 +530,10 @@ export class SecureChannelHandler {
   onSecureConnect: ((verificationData: Buffer) => void) | null = null;
   onError: ((err: Error) => void) | null = null;
 
+  // Set to the raw bytes received before handshake completion (used by the
+  // application layer to verify the server's identity signature).
+  verificationDataBuffer: Buffer | undefined = undefined;
+
   constructor(options: {
     socket: dgram.Socket;
     host: string;
@@ -861,6 +865,7 @@ export class SecureChannelHandler {
     this.state = "handshakeComplete";
     this.collectingVerificationData = false;
     const verificationData = Buffer.concat(this.verificationDataBufs);
+    this.verificationDataBuffer = verificationData;
     this.onSecureConnect?.(verificationData);
   }
 

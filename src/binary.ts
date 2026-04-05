@@ -13,7 +13,7 @@ export function encodeVarInt(value: number): Buffer {
   }
 
   // Calculate number of bits needed
-  const bits = val === 0 ? 1 : Math.floor(Math.log2(val)) + 1;
+  const bits = Math.floor(Math.log2(val)) + 1;
   // Calculate number of 7-bit chunks needed
   const numBytes = Math.ceil(bits / 7);
 

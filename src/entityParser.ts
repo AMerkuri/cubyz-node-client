@@ -2,7 +2,6 @@ import type { Buffer } from "node:buffer";
 import { readFloat16BE } from "./binary.js";
 import {
   ENTITY_POSITION_TYPE,
-  type EntityPositionPacket,
   type EntityPositionType,
   type EntitySnapshot,
   type ItemSnapshot,
@@ -12,10 +11,19 @@ import {
 
 export type EntityParserLogger = (level: LogLevel, ...args: unknown[]) => void;
 
+export interface ParsedEntityPositions {
+  timestamp: number;
+  basePosition: Vector3;
+  entities: EntitySnapshot[];
+  items: ItemSnapshot[];
+  entityStates: Map<number, EntitySnapshot>;
+  itemStates: Map<number, ItemSnapshot>;
+}
+
 export function parseEntityPositionPacket(
   payload: Buffer,
   log: EntityParserLogger,
-): EntityPositionPacket | null {
+): ParsedEntityPositions | null {
   const headerSize = 2 + 8 * 3;
   if (payload.length < headerSize) {
     log("warn", "Entity position payload too short", {
@@ -161,11 +169,8 @@ export function parseEntityPositionPacket(
       basePosition: { ...basePosition },
       entities: entitiesForEvent,
       items: itemsForEvent,
-      _entityStates: nextEntityStates,
-      _itemStates: nextItemStates,
-    } as EntityPositionPacket & {
-      _entityStates: Map<number, EntitySnapshot>;
-      _itemStates: Map<number, ItemSnapshot>;
+      entityStates: nextEntityStates,
+      itemStates: nextItemStates,
     };
   } catch (err) {
     log("warn", "Failed to decode entity position payload", err);

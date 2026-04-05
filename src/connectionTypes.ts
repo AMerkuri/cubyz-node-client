@@ -63,6 +63,8 @@ export const GENERIC_UPDATE_TYPE = {
   WORLD_EDIT_POS: 2,
   TIME: 3,
   BIOME: 4,
+  PARTICLES: 5,
+  CLEAR: 6,
 } as const;
 
 export type GenericUpdateType =
@@ -110,12 +112,30 @@ export interface BiomeUpdate {
   biomeId: number;
 }
 
+export interface ParticlesUpdate {
+  type: "particles";
+  particleId: string;
+  position: Vector3;
+  collides: boolean;
+  count: number;
+  spawnZon: string;
+}
+
+export type ClearType = "chat";
+
+export interface ClearUpdate {
+  type: "clear";
+  clearType: ClearType;
+}
+
 export type GenericUpdate =
   | GamemodeUpdate
   | TeleportUpdate
   | WorldEditPosUpdate
   | TimeUpdate
-  | BiomeUpdate;
+  | BiomeUpdate
+  | ParticlesUpdate
+  | ClearUpdate;
 
 export interface EntityPositionPacket {
   timestamp: number;
