@@ -34,6 +34,11 @@ export class SendChannel {
   private readonly pendingMessages: Buffer[] = [];
   private readonly inFlight = new Map<number, InFlightEntry>();
   private readonly acked = new Map<number, number>();
+  // When set, sendRawBytes() will be called instead of the normal send path.
+  // Used when the channel is operating in TLS mode.
+  public rawSendCallback:
+    | ((data: Buffer, port: number, host: string) => void)
+    | null = null;
 
   constructor(channelId: SequencedChannelId, initialSequence: number) {
     this.channelId = channelId;
@@ -73,7 +78,7 @@ export class SendChannel {
     if (!message) {
       return null;
     }
-    if (message.length > MTU - 5) {
+    if (message.length > MTU - 5 && this.rawSendCallback === null) {
       throw new Error("Message exceeds MTU allowance for a single packet");
     }
     const start = this.nextIndex;

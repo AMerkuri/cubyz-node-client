@@ -144,6 +144,7 @@ export interface CubyzConnectionOptions {
   version?: string;
   logger?: CubyzConnectionLogger;
   logLevel?: LogLevel;
+  identityFile?: string;
 }
 
 export interface CloseOptions {

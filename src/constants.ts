@@ -1,6 +1,6 @@
 export const CHANNEL = {
   LOSSY: 0,
-  FAST: 1,
+  SECURE: 1,
   SLOW: 2,
   CONFIRMATION: 3,
   INIT: 4,
@@ -11,7 +11,7 @@ export const CHANNEL = {
 export type ChannelId = (typeof CHANNEL)[keyof typeof CHANNEL];
 export type SequencedChannelId =
   | typeof CHANNEL.LOSSY
-  | typeof CHANNEL.FAST
+  | typeof CHANNEL.SECURE
   | typeof CHANNEL.SLOW;
 
 export const PROTOCOL = {
@@ -29,8 +29,10 @@ export type ProtocolId = (typeof PROTOCOL)[keyof typeof PROTOCOL];
 export const HANDSHAKE_STATE = {
   START: 0,
   USER_DATA: 1,
-  ASSETS: 2,
-  SERVER_DATA: 3,
+  SIGNATURE_REQUEST: 2,
+  SIGNATURE_RESPONSE: 3,
+  ASSETS: 4,
+  SERVER_DATA: 5,
   COMPLETE: 255,
 } as const;
 

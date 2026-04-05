@@ -24,6 +24,9 @@
   },
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "@noble/post-quantum": "^0.3.1"
+  },
   "devDependencies": {
     "@biomejs/biome": "2.2.6",
     "@types/node": "^24.8.1",

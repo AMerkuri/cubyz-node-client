@@ -2,6 +2,13 @@ import { Buffer } from "node:buffer";
 import { randomInt } from "node:crypto";
 import dgram from "node:dgram";
 import { EventEmitter } from "node:events";
+import {
+  type Identity,
+  loadOrCreateIdentity,
+  signEd25519,
+  signMlDsa44,
+  signP256,
+} from "./authentication.js";
 import { decodeVarInt, readInt32BE, writeInt32BE } from "./binary.js";
 import { prepareChatMessage } from "./chatFormat.js";
 import {
@@ -44,6 +51,7 @@ import {
   randomSequence,
 } from "./handshakeUtils.js";
 import { parseChannelPacket, ReceiveChannel } from "./receiveChannel.js";
+import { SecureChannelHandler } from "./secureChannel.js";
 import { SendChannel } from "./sendChannel.js";
 import { parseZon, type ZonValue } from "./zon.js";
 
@@ -72,6 +80,32 @@ export type {
   WorldEditPosUpdate,
 } from "./connectionTypes.js";
 export { GAMEMODE } from "./connectionTypes.js";
+
+// Internal augmentation to carry verificationData on SecureChannelHandler.
+interface SecureChannelHandlerWithVerification extends SecureChannelHandler {
+  verificationDataBuffer?: Buffer;
+}
+
+// Decode a MSB-first varint from the buffer at the given offset.
+function decodeMsbVarInt(
+  buf: Buffer,
+  offset: number,
+): { value: number; consumed: number } {
+  let value = 0;
+  let consumed = 0;
+  while (offset + consumed < buf.length) {
+    const byte = buf[offset + consumed];
+    value = (value << 7) | (byte & 0x7f);
+    consumed += 1;
+    if ((byte & 0x80) === 0) {
+      return { value, consumed };
+    }
+    if (consumed > 5) {
+      throw new Error("MSB varint exceeds 5 bytes");
+    }
+  }
+  throw new Error("MSB varint truncated");
+}
 
 export class CubyzConnection extends EventEmitter {
   public readonly host: string;
@@ -108,8 +142,10 @@ export class CubyzConnection extends EventEmitter {
   private disconnectSent = false;
   private disconnectEmitted = false;
   private initSent = false;
-  private handshakeQueued = false;
   private awaitingServerSince: number | null = null;
+  private readonly identityFile: string;
+  private identity: Identity | null = null;
+  private secureChannel: SecureChannelHandler | null = null;
 
   constructor({
     host,
@@ -118,6 +154,7 @@ export class CubyzConnection extends EventEmitter {
     version = DEFAULT_VERSION,
     logger = console,
     logLevel = "error",
+    identityFile = "./cubyz-identity.txt",
   }: CubyzConnectionOptions) {
     super();
     this.host = host;
@@ -128,6 +165,7 @@ export class CubyzConnection extends EventEmitter {
     this.logLevel = (
       logLevel in LOG_LEVEL_ORDER ? logLevel : "error"
     ) as LogLevel;
+    this.identityFile = identityFile;
 
     this.socket = dgram.createSocket("udp4");
     this.connectionId = BigInt.asIntN(
@@ -137,7 +175,7 @@ export class CubyzConnection extends EventEmitter {
 
     this.sendChannels = {
       [CHANNEL.LOSSY]: new SendChannel(CHANNEL.LOSSY, randomSequence()),
-      [CHANNEL.FAST]: new SendChannel(CHANNEL.FAST, randomSequence()),
+      [CHANNEL.SECURE]: new SendChannel(CHANNEL.SECURE, randomSequence()),
       [CHANNEL.SLOW]: new SendChannel(CHANNEL.SLOW, randomSequence()),
     } as Record<SequencedChannelId, SendChannel>;
 
@@ -214,6 +252,9 @@ export class CubyzConnection extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    this.identity = await loadOrCreateIdentity(this.identityFile);
+    this.log("info", `Loaded identity from ${this.identityFile}`);
+
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error) => {
         this.socket.off("listening", onListening);
@@ -305,6 +346,10 @@ export class CubyzConnection extends EventEmitter {
 
   private flushSendQueues(now: number): void {
     for (const channel of Object.values(this.sendChannels)) {
+      // The SECURE channel is driven by SecureChannelHandler; skip normal queuing.
+      if (channel.channelId === CHANNEL.SECURE) {
+        continue;
+      }
       if (!channel.hasWork()) {
         continue;
       }
@@ -358,22 +403,31 @@ export class CubyzConnection extends EventEmitter {
     payload[0] = CHANNEL.INIT;
     payload.writeBigInt64BE(this.connectionId, 1);
     writeInt32BE(payload, 9, this.sendChannels[CHANNEL.LOSSY].initialSequence);
-    writeInt32BE(payload, 13, this.sendChannels[CHANNEL.FAST].initialSequence);
+    writeInt32BE(
+      payload,
+      13,
+      this.sendChannels[CHANNEL.SECURE].initialSequence,
+    );
     writeInt32BE(payload, 17, this.sendChannels[CHANNEL.SLOW].initialSequence);
     this.socket.send(payload, this.port, this.host);
     this.initSent = true;
   }
 
-  private sendInitAck(): void {
+  private sendInitAck(onSent?: () => void): void {
     const buffer = Buffer.alloc(1 + 8);
     buffer[0] = CHANNEL.INIT;
     buffer.writeBigInt64BE(this.connectionId, 1);
-    this.socket.send(buffer, this.port, this.host);
+    this.socket.send(buffer, this.port, this.host, (err) => {
+      if (err) {
+        this.log("error", "Failed to send init ack:", err);
+      }
+      onSent?.();
+    });
   }
 
   private ensureReceiveChannels(
     lossyStart: number,
-    fastStart: number,
+    secureStart: number,
     slowStart: number,
   ): void {
     if (!this.receiveChannels.has(CHANNEL.LOSSY)) {
@@ -382,11 +436,13 @@ export class CubyzConnection extends EventEmitter {
         new ReceiveChannel(CHANNEL.LOSSY, lossyStart),
       );
     }
-    if (!this.receiveChannels.has(CHANNEL.FAST)) {
-      this.receiveChannels.set(
-        CHANNEL.FAST,
-        new ReceiveChannel(CHANNEL.FAST, fastStart),
-      );
+    if (!this.receiveChannels.has(CHANNEL.SECURE)) {
+      const secureRecv = new ReceiveChannel(CHANNEL.SECURE, secureStart);
+      // Route raw bytes from the SECURE channel into the TLS handler.
+      secureRecv.rawBytesCallback = (data: Buffer) => {
+        this.secureChannel?.feedRawBytes(data);
+      };
+      this.receiveChannels.set(CHANNEL.SECURE, secureRecv);
     }
     if (!this.receiveChannels.has(CHANNEL.SLOW)) {
       this.receiveChannels.set(
@@ -394,6 +450,51 @@ export class CubyzConnection extends EventEmitter {
         new ReceiveChannel(CHANNEL.SLOW, slowStart),
       );
     }
+  }
+
+  private setupSecureChannel(): void {
+    if (this.secureChannel !== null) {
+      return;
+    }
+    const handler = new SecureChannelHandler({
+      socket: this.socket,
+      host: this.host,
+      port: this.port,
+      channelId: CHANNEL.SECURE,
+      mtu: 548,
+      initialSendSeq: this.sendChannels[CHANNEL.SECURE].initialSequence,
+    });
+
+    handler.onError = (err: Error) => {
+      this.log("error", "Secure channel error:", err);
+    };
+
+    handler.onSecureConnect = (verificationData: Buffer) => {
+      this.log("debug", "TLS handshake complete, sending userData");
+      if (!this.identity) {
+        this.log("error", "No identity loaded before TLS handshake completed");
+        return;
+      }
+      const payload = buildHandshakePayload(
+        this.name,
+        this.version,
+        this.identity,
+      );
+      handler.sendMessage(PROTOCOL.HANDSHAKE, payload);
+      // Store verificationData on the handler for signature use later.
+      (handler as SecureChannelHandlerWithVerification).verificationDataBuffer =
+        verificationData;
+    };
+
+    handler.onMessage = (msg: { protocolId: number; payload: Buffer }) => {
+      this.handleProtocol(CHANNEL.SECURE, msg.protocolId, msg.payload).catch(
+        (err) => {
+          this.log("error", `Secure protocol ${msg.protocolId} failed:`, err);
+        },
+      );
+    };
+
+    this.secureChannel = handler;
   }
 
   private handlePacket(buffer: Buffer): void | Promise<void> {
@@ -435,27 +536,23 @@ export class CubyzConnection extends EventEmitter {
     const remoteId = buffer.readBigInt64BE(1);
     this.remoteConnectionId = remoteId;
     const lossyStart = readInt32BE(buffer, 9);
-    const fastStart = readInt32BE(buffer, 13);
+    const secureStart = readInt32BE(buffer, 13);
     const slowStart = readInt32BE(buffer, 17);
-    this.ensureReceiveChannels(lossyStart, fastStart, slowStart);
+    this.ensureReceiveChannels(lossyStart, secureStart, slowStart);
     if (this.state !== "connected") {
       this.state = "connected";
       this.lastInbound = Date.now();
       this.awaitingServerSince = null;
       this.log("info", "Channel handshake completed with server");
-      this.sendInitAck();
-      this.queueHandshake();
+      this.setupSecureChannel();
+      // Send the init-ACK and only start the TLS handshake once the packet
+      // has been handed to the OS, guaranteeing the server transitions to
+      // .connected before it receives the TLS ClientHello.
+      this.sendInitAck(() => {
+        this.secureChannel?.startHandshake();
+      });
       this.emit("connected");
     }
-  }
-
-  private queueHandshake(): void {
-    if (this.handshakeQueued) {
-      return;
-    }
-    const payload = buildHandshakePayload(this.name, this.version);
-    this.sendChannels[CHANNEL.FAST].queue(PROTOCOL.HANDSHAKE, payload);
-    this.handshakeQueued = true;
   }
 
   private async handleSequencedPacket(buffer: Buffer): Promise<void> {
@@ -534,6 +631,10 @@ export class CubyzConnection extends EventEmitter {
   private async handleHandshake(payload: Buffer): Promise<void> {
     const { state, data } = parseHandshake(payload);
     switch (state) {
+      case HANDSHAKE_STATE.SIGNATURE_REQUEST: {
+        await this.handleSignatureRequest(data);
+        break;
+      }
       case HANDSHAKE_STATE.ASSETS: {
         // Assets are compressed with zlib's raw DEFLATE
         // Skipping asset storage for brevity
@@ -642,6 +743,87 @@ export class CubyzConnection extends EventEmitter {
       default:
         this.log("debug", `Unhandled handshake state ${state}`);
     }
+  }
+
+  private async handleSignatureRequest(data: Buffer): Promise<void> {
+    if (!this.identity) {
+      this.log("error", "No identity available for signature request");
+      return;
+    }
+    if (!this.secureChannel) {
+      this.log("error", "No secure channel for signature request");
+      return;
+    }
+
+    const verificationData =
+      (this.secureChannel as SecureChannelHandlerWithVerification)
+        .verificationDataBuffer ?? Buffer.alloc(0);
+
+    // Parse signatureRequest:
+    // [varint: len of algo1 name][algo1 name bytes][varint: len of algo2 name (0 if none)][algo2 name bytes if present]
+    let offset = 0;
+    const algo1LenResult = decodeMsbVarInt(data, offset);
+    offset += algo1LenResult.consumed;
+    const algo1Name = data
+      .slice(offset, offset + algo1LenResult.value)
+      .toString("utf8");
+    offset += algo1LenResult.value;
+
+    let algo2Name = "";
+    if (offset < data.length) {
+      const algo2LenResult = decodeMsbVarInt(data, offset);
+      offset += algo2LenResult.consumed;
+      if (algo2LenResult.value > 0) {
+        algo2Name = data
+          .slice(offset, offset + algo2LenResult.value)
+          .toString("utf8");
+      }
+    }
+
+    this.log(
+      "debug",
+      "Signature request: algo1=",
+      algo1Name,
+      "algo2=",
+      algo2Name,
+    );
+
+    const signatureBuffers: Buffer[] = [];
+    const identity = this.identity;
+
+    const signOne = async (algoName: string): Promise<void> => {
+      switch (algoName) {
+        case "ed25519":
+          signatureBuffers.push(
+            signEd25519(identity.keys.ed25519PrivKey, verificationData),
+          );
+          break;
+        case "ecdsaP256Sha256":
+          signatureBuffers.push(
+            signP256(identity.keys.p256PrivKey, verificationData),
+          );
+          break;
+        case "mldsa44":
+          signatureBuffers.push(
+            await signMlDsa44(identity.keys.mlDsa44PrivKey, verificationData),
+          );
+          break;
+        default:
+          this.log("warn", "Unknown signature algorithm requested:", algoName);
+      }
+    };
+
+    await signOne(algo1Name);
+    if (algo2Name) {
+      await signOne(algo2Name);
+    }
+
+    // signatureResponse format: [state byte = 3][sig1_bytes][optional sig2_bytes]
+    const statePrefix = Buffer.from([HANDSHAKE_STATE.SIGNATURE_RESPONSE]);
+    const responsePayload = Buffer.concat([statePrefix, ...signatureBuffers]);
+
+    this.secureChannel.sendMessage(PROTOCOL.HANDSHAKE, responsePayload);
+    this.log("debug", "Sent signature response");
   }
 
   private handleEntityUpdate(payload: Buffer): void {

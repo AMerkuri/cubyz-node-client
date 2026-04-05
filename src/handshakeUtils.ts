@@ -1,5 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomInt } from "node:crypto";
+import type { Identity } from "./authentication.js";
+import { buildPublicKeysZon } from "./authentication.js";
 import { HANDSHAKE_STATE, type HandshakeState } from "./constants.js";
 
 export function randomSequence(): number {
@@ -10,10 +12,20 @@ export function escapeZonString(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 }
 
-export function buildHandshakePayload(name: string, version: string): Buffer {
+export function buildHandshakePayload(
+  name: string,
+  version: string,
+  identity?: Identity,
+): Buffer {
   const safeName = escapeZonString(name);
   const safeVersion = escapeZonString(version);
-  const zon = `.{.version = "${safeVersion}", .name = "${safeName}"}`;
+  let zon: string;
+  if (identity) {
+    const keysZon = buildPublicKeysZon(identity.keys);
+    zon = `.{.version = "${safeVersion}", .name = "${safeName}", .keys = ${keysZon}}`;
+  } else {
+    zon = `.{.version = "${safeVersion}", .name = "${safeName}"}`;
+  }
   const prefix = Buffer.from([HANDSHAKE_STATE.USER_DATA]);
   return Buffer.concat([prefix, Buffer.from(zon, "utf8")]);
 }

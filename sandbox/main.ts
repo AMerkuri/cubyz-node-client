@@ -16,6 +16,7 @@ const logLevel = (process.env.CUBYZ_LOG_LEVEL ?? "debug").toLowerCase() as
   | "warn"
   | "error"
   | "silent";
+const identityFile = process.env.CUBYZ_IDENTITY_FILE ?? "./cubyz-identity.txt";
 
 async function main() {
   const connection = new CubyzConnection({
@@ -24,6 +25,8 @@ async function main() {
     name,
     logger: console,
     logLevel,
+    identityFile,
+    version: "0.3.0",
   });
 
   connection.on("connected", () => {

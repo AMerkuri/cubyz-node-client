@@ -37,6 +37,10 @@ export interface SequencedChannelPacket {
 
 export class ReceiveChannel {
   public readonly channelId: SequencedChannelId;
+  // When set, raw UDP payload bytes are forwarded to this callback instead of
+  // being parsed as framed protocol messages.  Used for the SECURE channel
+  // while it is running TLS.
+  public rawBytesCallback: ((data: Buffer) => void) | null = null;
   private expected: number;
   private readonly pending = new Map<number, Buffer>();
   private readonly chunks: Chunk[] = [];
@@ -62,9 +66,27 @@ export class ReceiveChannel {
       return responses;
     }
     this.pending.set(start, payload);
+
+    // In raw bytes mode the payload is forwarded to the callback in sequence
+    // order (same ordering guarantee as normal framed mode).
+    if (this.rawBytesCallback !== null) {
+      this.flushPendingRaw();
+      return responses;
+    }
+
     this.flushPending(responses.messages);
 
     return responses;
+  }
+
+  private flushPendingRaw(): void {
+    while (true) {
+      const chunk = this.pending.get(this.expected);
+      if (!chunk) break;
+      this.pending.delete(this.expected);
+      this.expected = addSeq(this.expected, chunk.length);
+      this.rawBytesCallback?.(chunk);
+    }
   }
 
   private flushPending(collectedMessages: ReceivedMessage[]): void {
